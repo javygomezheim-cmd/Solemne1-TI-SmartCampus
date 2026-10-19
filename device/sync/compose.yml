@@ -1,0 +1,28 @@
+# Se suma al compose base (requiere el servicio mosquitto).
+# Lee API_URL y DEVICE_TOKEN desde device/.env
+services:
+  sync:
+    build: ./sync
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    depends_on:
+      mosquitto:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      MQTT_HOST: mosquitto
+    volumes:
+      - sync-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/healthy) )) -lt 60"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  sync-data:
