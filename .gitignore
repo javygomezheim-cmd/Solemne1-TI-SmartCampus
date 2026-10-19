@@ -1,0 +1,22 @@
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+*.pem
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Node.js y Next.js
+node_modules/
+.next/
+
+# Archivos del sistema y editores
+.DS_Store
+Thumbs.db
+.vscode/
