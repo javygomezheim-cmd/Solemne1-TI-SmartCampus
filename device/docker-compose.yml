@@ -1,0 +1,29 @@
+name: iot
+
+# Compose base: solo el broker MQTT (Mosquitto).
+# Cada microservicio trae su propio archivo <servicio>/compose.yml.
+# Para levantar varios a la vez, lista los archivos en device/.env (local, no se sube a Git):
+#   COMPOSE_FILE=docker-compose.yml:acq-dht/compose.yml:acq-pir/compose.yml
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    # sin "ports": el broker solo es accesible dentro de la red de Docker
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/broker/uptime' -C 1 -W 5"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  mosquitto-data:
