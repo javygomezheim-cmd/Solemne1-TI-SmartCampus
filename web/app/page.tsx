@@ -1,190 +1,242 @@
-// web/app/page.tsx
+'use client';
+
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { auth, db } from '@/lib/firebase';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { collection, query, orderBy, limit, onSnapshot, doc, updateDoc, getDoc, getDocs, where, Timestamp } from 'firebase/firestore';
 
 const ORG_ID = "mi-org";
 const DEVICE_ID = "Oo2T8PLAS6jet80h8wLo";
 
-// Datos simulados idénticos a los que genera la Raspberry Pi
-const MOCK_DEVICE_INFO = {
-  name: "Sensor Sala Laboratorio 101",
-  revoked: false,
-  lastSeen: "25-10-2026, 16:00:15",
-  config: {
-    sampleIntervalSec: 10,
-    tempMax: 26.0,
-    humMax: 70.0,
-    occupancyWindowMin: 5,
-    dhtEnabled: true,
-    pirEnabled: true,
-    version: 3,
-  },
-};
+export default function DashboardPage() {
+  const router = useRouter();
+  const [isChecking, setIsChecking] = useState(true);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [readings, setReadings] = useState<any[]>([]);
+  const [deviceInfo, setDeviceInfo] = useState<any>(null);
 
-const MOCK_READINGS = [
-  { id: "1729881600", tsLabel: "15:40:00", tempavg: 21.2, humavg: 48.5, occupied: true, motionevents: 4, comfort: "Confortable", samples: 6, alerts: [] },
-  { id: "1729881660", tsLabel: "15:45:00", tempavg: 21.8, humavg: 49.0, occupied: true, motionevents: 7, comfort: "Confortable", samples: 6, alerts: [] },
-  { id: "1729881720", tsLabel: "15:50:00", tempavg: 22.4, humavg: 50.2, occupied: true, motionevents: 5, comfort: "Confortable", samples: 6, alerts: [] },
-  { id: "1729881780", tsLabel: "15:55:00", tempavg: 24.1, humavg: 53.0, occupied: true, motionevents: 12, comfort: "Aceptable", samples: 6, alerts: [] },
-  { id: "1729881840", tsLabel: "16:00:00", tempavg: 26.8, humavg: 55.4, occupied: true, motionevents: 15, comfort: "Caluroso", samples: 6, alerts: ["Umbral de temperatura superado (> 26.0 °C)"] },
-];
+  // Estados para el filtro de fechas
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
 
-export default function DashboardPreviewPage() {
-  const latest = MOCK_READINGS[MOCK_READINGS.length - 1];
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        setUserEmail(user.email);
+        try {
+          const userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (userDoc.exists()) {
+            setUserRole(userDoc.data().role);
+          }
+        } catch (error) {
+          console.error("Error al obtener rol:", error);
+        }
+        setIsChecking(false);
+      } else {
+        router.push('/login');
+      }
+    });
+    return () => unsubscribe();
+  }, [router]);
+
+  // Carga inicial en tiempo real (últimos 20 registros)
+  useEffect(() => {
+    if (!userEmail) return;
+
+    const q = query(
+      collection(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}/readings`),
+      orderBy('ts', 'desc'),
+      limit(20)
+    );
+    const unsubscribeReadings = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setReadings(data);
+    });
+
+    const deviceRef = doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`);
+    const unsubscribeDevice = onSnapshot(deviceRef, (docSnap) => {
+      if (docSnap.exists()) setDeviceInfo(docSnap.data());
+    });
+
+    return () => {
+      unsubscribeReadings();
+      unsubscribeDevice();
+    };
+  }, [userEmail]);
+
+  // Función para consultar históricos por rango de fechas bajo demanda
+  const handleQueryByDateRange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!startDate || !endDate) {
+      alert("Por favor selecciona ambas fechas.");
+      return;
+    }
+
+    try {
+      setLoadingHistory(true);
+      const startTimestamp = Timestamp.fromDate(new Date(startDate + 'T00:00:00'));
+      const endTimestamp = Timestamp.fromDate(new Date(endDate + 'T23:59:59'));
+
+      const readingsRef = collection(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}/readings`);
+      const q = query(
+        readingsRef,
+        where('ts', '>=', startTimestamp),
+        where('ts', '<=', endTimestamp),
+        orderBy('ts', 'desc'),
+        limit(100) // Límite de seguridad para evitar consumo excesivo
+      );
+
+      const querySnapshot = await getDocs(q);
+      const data = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setReadings(data);
+    } catch (error) {
+      console.error("Error al consultar histórico:", error);
+      alert("Error al filtrar por fechas. Revisa los índices compuestos en Firestore si es necesario.");
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  const handleUpdateConfig = async () => {
+    try {
+      const deviceRef = doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`);
+      const newInterval = Math.floor(Math.random() * 20) + 10;
+      await updateDoc(deviceRef, {
+        "config.sampleIntervalSec": newInterval,
+        "config.version": Math.floor(Math.random() * 1000)
+      });
+      alert(`Éxito: Intervalo actualizado a ${newInterval}s.`);
+    } catch (error) {
+      console.error(error);
+      alert("Acceso denegado.");
+    }
+  };
+
+  if (isChecking) return <div style={{ padding: "5rem", textAlign: "center" }}>Verificando seguridad...</div>;
+
+  const latest = readings.length > 0 ? readings[0] : null;
 
   return (
-    <main style={{ padding: "2rem", fontFamily: "system-ui, -apple-system, sans-serif", maxWidth: "1100px", margin: "0 auto", color: "#1f2937" }}>
-      {/* Encabezado */}
-      <header style={{ marginBottom: "2rem", borderBottom: "1px solid #e5e7eb", paddingBottom: "1.2rem" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: "1rem" }}>
-          <div>
-            <div style={{ display: "inline-block", background: "#fef3c7", color: "#92400e", fontSize: "0.75rem", fontWeight: 700, padding: "0.2rem 0.6rem", borderRadius: "9999px", marginBottom: "0.5rem" }}>
-              MODO VISTA PREVIA (DATOS DE PRUEBA)
-            </div>
-            <h1 style={{ margin: 0, fontSize: "1.75rem", fontWeight: 700 }}>Monitoreo IoT Smart Campus</h1>
-            <p style={{ margin: "0.4rem 0 0", color: "#6b7280", fontSize: "0.95rem" }}>
-              Organización: <strong>{ORG_ID}</strong> | Dispositivo: <strong>{MOCK_DEVICE_INFO.name}</strong> ({DEVICE_ID})
-            </p>
-          </div>
-
-          <div style={{ fontSize: "0.9rem", textAlign: "right" }}>
-            <div>
-              Estado: <span style={{ fontWeight: 600, color: "#16a34a" }}>● En Línea</span>
-            </div>
-            <div style={{ color: "#6b7280", fontSize: "0.85rem", marginTop: "0.2rem" }}>
-              Última sincronización: {MOCK_DEVICE_INFO.lastSeen}
-            </div>
-          </div>
+    <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "1100px", margin: "0 auto", color: "#1f2937" }}>
+      <header style={{ marginBottom: "2rem", borderBottom: "1px solid #e5e7eb", paddingBottom: "1.2rem", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "1rem" }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: "1.75rem", fontWeight: 700 }}>Monitoreo IoT Smart Campus</h1>
+          <p style={{ margin: "0.4rem 0 0", color: "#6b7280" }}>Dispositivo: {DEVICE_ID}</p>
+          <p style={{ margin: "0.4rem 0 0", color: "#2563eb", fontWeight: 600 }}>Usuario: {userEmail} | Rol: {userRole || 'Sin rol'}</p>
+        </div>
+        <div>
+          <button onClick={() => signOut(auth)} style={{ background: "#ef4444", color: "white", padding: "0.4rem 0.8rem", borderRadius: "6px", border: "none", cursor: "pointer" }}>Cerrar Sesión</button>
         </div>
       </header>
 
-      {/* Banner de Alerta si se supera el umbral */}
-      {latest.alerts && latest.alerts.length > 0 && (
-        <div style={{ backgroundColor: "#fef2f2", border: "1px solid #fecaca", borderRadius: "8px", padding: "1rem", marginBottom: "1.5rem" }}>
-          <strong style={{ color: "#991b1b" }}>⚠️ Alertas detectadas en la sala:</strong>
-          <ul style={{ margin: "0.4rem 0 0 1.2rem", color: "#b91c1c" }}>
-            {latest.alerts.map((alert, idx) => (
-              <li key={idx}>{alert}</li>
-            ))}
-          </ul>
+      {/* Tarjetas de Métricas en Tiempo Real */}
+      {latest && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
+            <span style={{ color: "#6b7280", fontWeight: 600 }}>Temperatura Promedio</span>
+            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#ea580c" }}>{latest.tempAvg} °C</div>
+          </div>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
+            <span style={{ color: "#6b7280", fontWeight: 600 }}>Humedad Relativa</span>
+            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#0284c7" }}>{latest.humAvg} %</div>
+          </div>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
+            <span style={{ color: "#6b7280", fontWeight: 600 }}>Ocupación</span>
+            <div style={{ fontSize: "1.8rem", fontWeight: 700, color: latest.occupied ? "#16a34a" : "#6b7280" }}>
+              {latest.occupied ? "Ocupada" : "Despejada"}
+            </div>
+          </div>
+          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
+            <span style={{ color: "#6b7280", fontWeight: 600 }}>Eventos PIR</span>
+            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#7c3aed" }}>{latest.motionEvents ?? 0}</div>
+          </div>
         </div>
       )}
 
-      {/* Tarjetas de Métricas en Vivo */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
-        <div style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-          <span style={{ color: "#6b7280", fontSize: "0.85rem", fontWeight: 600 }}>Temperatura Promedio</span>
-          <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#ea580c", margin: "0.4rem 0" }}>
-            {latest.tempavg} °C
+      {/* Selector de Rango de Fechas para Históricos */}
+      <section style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "1.25rem", marginBottom: "2rem" }}>
+        <h3 style={{ margin: "0 0 0.8rem 0", fontSize: "1rem" }}>Consulta de Históricos por Rango de Fechas</h3>
+        <form onSubmit={handleQueryByDateRange} style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "center" }}>
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", color: "#64748b", marginBottom: "0.2rem" }}>Desde:</label>
+            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #cbd5e1" }} />
           </div>
-          <small style={{ color: "#9ca3af" }}>Sensor DHT22 (Muestras: {latest.samples})</small>
-        </div>
-
-        <div style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-          <span style={{ color: "#6b7280", fontSize: "0.85rem", fontWeight: 600 }}>Humedad Relativa</span>
-          <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#0284c7", margin: "0.4rem 0" }}>
-            {latest.humavg} %
+          <div>
+            <label style={{ display: "block", fontSize: "0.8rem", color: "#64748b", marginBottom: "0.2rem" }}>Hasta:</label>
+            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #cbd5e1" }} />
           </div>
-          <small style={{ color: "#9ca3af" }}>Sensor DHT22</small>
-        </div>
-
-        <div style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-          <span style={{ color: "#6b7280", fontSize: "0.85rem", fontWeight: 600 }}>Ocupación de Sala</span>
-          <div style={{ fontSize: "1.8rem", fontWeight: 700, color: latest.occupied ? "#16a34a" : "#6b7280", margin: "0.4rem 0" }}>
-            {latest.occupied ? "Ocupada" : "Desocupada"}
+          <div style={{ alignSelf: "flex-end" }}>
+            <button type="submit" disabled={loadingHistory} style={{ background: "#0f172a", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", border: "none", cursor: "pointer" }}>
+              {loadingHistory ? "Consultando..." : "Consultar Histórico"}
+            </button>
           </div>
-          <small style={{ color: "#9ca3af" }}>{latest.motionevents} movimientos (Sensor PIR)</small>
-        </div>
-
-        <div style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
-          <span style={{ color: "#6b7280", fontSize: "0.85rem", fontWeight: 600 }}>Índice de Confort</span>
-          <div style={{ fontSize: "1.8rem", fontWeight: 700, color: "#7c3aed", margin: "0.4rem 0" }}>
-            {latest.comfort}
-          </div>
-          <small style={{ color: "#9ca3af" }}>Cálculo en microservicio</small>
-        </div>
-      </div>
-
-      {/* Gráfico representativo con barras CSS (sin dependencias externas) */}
-      <section style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.5rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", marginBottom: "2rem" }}>
-        <h2 style={{ fontSize: "1.1rem", fontWeight: 600, margin: "0 0 1.2rem 0" }}>
-          Tendencia de Temperatura Reciente (°C)
-        </h2>
-        <div style={{ display: "flex", alignItems: "flex-end", gap: "1.5rem", height: "180px", borderBottom: "1px solid #e5e7eb", paddingBottom: "0.5rem" }}>
-          {MOCK_READINGS.map((r) => {
-            const heightPercent = Math.min(100, Math.max(10, (r.tempavg / 35) * 100));
-            return (
-              <div key={r.id} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end" }}>
-                <span style={{ fontSize: "0.75rem", fontWeight: 600, color: "#ea580c", marginBottom: "0.25rem" }}>
-                  {r.tempavg}°
-                </span>
-                <div
-                  style={{
-                    width: "100%",
-                    maxWidth: "48px",
-                    height: `${heightPercent}%`,
-                    backgroundColor: r.tempavg > 26 ? "#ef4444" : "#f97316",
-                    borderRadius: "4px 4px 0 0",
-                    transition: "height 0.3s ease",
-                  }}
-                />
-                <span style={{ fontSize: "0.7rem", color: "#6b7280", marginTop: "0.5rem" }}>
-                  {r.tsLabel}
-                </span>
-              </div>
-            );
-          })}
-        </div>
+        </form>
       </section>
 
-      {/* Tabla con el Histórico de Lecturas */}
+      {/* Tabla de Histórico / Resultados */}
       <section style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.5rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", marginBottom: "2rem" }}>
-        <h2 style={{ fontSize: "1.1rem", fontWeight: 600, margin: "0 0 1rem 0" }}>Histórico de Lotes Procesados</h2>
+        <h2 style={{ fontSize: "1.1rem", fontWeight: 600, margin: "0 0 1rem 0" }}>Registros Mostrados ({readings.length})</h2>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.875rem" }}>
             <thead>
               <tr style={{ borderBottom: "2px solid #e5e7eb", color: "#4b5563" }}>
-                <th style={{ padding: "0.6rem" }}>Hora</th>
+                <th style={{ padding: "0.6rem" }}>Fecha y Hora</th>
                 <th style={{ padding: "0.6rem" }}>Temp Media</th>
                 <th style={{ padding: "0.6rem" }}>Humedad Media</th>
                 <th style={{ padding: "0.6rem" }}>Presencia</th>
                 <th style={{ padding: "0.6rem" }}>Eventos PIR</th>
-                <th style={{ padding: "0.6rem" }}>Confort</th>
+                <th style={{ padding: "0.6rem" }}>Alertas</th>
                 <th style={{ padding: "0.6rem" }}>Muestras</th>
               </tr>
             </thead>
             <tbody>
-              {MOCK_READINGS.slice().reverse().map((r) => (
-                <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                  <td style={{ padding: "0.6rem", fontWeight: 500 }}>{r.tsLabel}</td>
-                  <td style={{ padding: "0.6rem", fontWeight: 600, color: "#ea580c" }}>{r.tempavg} °C</td>
-                  <td style={{ padding: "0.6rem", fontWeight: 600, color: "#0284c7" }}>{r.humavg} %</td>
-                  <td style={{ padding: "0.6rem" }}>
-                    <span style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", fontSize: "0.75rem", fontWeight: 600, background: r.occupied ? "#dcfce7" : "#f3f4f6", color: r.occupied ? "#15803d" : "#4b5563" }}>
-                      {r.occupied ? "Ocupada" : "Despejada"}
-                    </span>
-                  </td>
-                  <td style={{ padding: "0.6rem" }}>{r.motionevents}</td>
-                  <td style={{ padding: "0.6rem" }}>{r.comfort}</td>
-                  <td style={{ padding: "0.6rem", color: "#6b7280" }}>{r.samples}</td>
-                </tr>
-              ))}
+              {readings.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: "1rem", textAlign: "center", color: "#6b7280" }}>No hay registros para este período.</td></tr>
+              ) : (
+                readings.map((r) => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                    <td style={{ padding: "0.6rem", fontWeight: 500 }}>
+                      {r.ts?.seconds ? new Date(r.ts.seconds * 1000).toLocaleString() : 'N/A'}
+                    </td>
+                    <td style={{ padding: "0.6rem", fontWeight: 600, color: "#ea580c" }}>{r.tempAvg} °C</td>
+                    <td style={{ padding: "0.6rem", fontWeight: 600, color: "#0284c7" }}>{r.humAvg} %</td>
+                    <td style={{ padding: "0.6rem" }}>
+                      <span style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", fontSize: "0.75rem", fontWeight: 600, background: r.occupied ? "#dcfce7" : "#f3f4f6", color: r.occupied ? "#15803d" : "#4b5563" }}>
+                        {r.occupied ? "Ocupada" : "Despejada"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "0.6rem" }}>{r.motionEvents ?? 0}</td>
+                    <td style={{ padding: "0.6rem", color: "#dc2626" }}>{r.alerts?.join(', ') || 'Ninguna'}</td>
+                    <td style={{ padding: "0.6rem", color: "#6b7280" }}>{r.samples}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
       </section>
 
-      {/* Configuración del dispositivo */}
-      <section style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-        <h3 style={{ margin: "0 0 0.8rem 0", fontSize: "0.95rem", color: "#374151" }}>Parámetros configurados en la Raspberry Pi</h3>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "0.8rem", fontSize: "0.85rem", color: "#4b5563" }}>
-          <div><strong>Intervalo muestreo:</strong> {MOCK_DEVICE_INFO.config.sampleIntervalSec}s</div>
-          <div><strong>Umbral Temp Máx:</strong> {MOCK_DEVICE_INFO.config.tempMax} °C</div>
-          <div><strong>Umbral Hum Máx:</strong> {MOCK_DEVICE_INFO.config.humMax} %</div>
-          <div><strong>Ventana ocupación:</strong> {MOCK_DEVICE_INFO.config.occupancyWindowMin} min</div>
-          <div><strong>Sensor DHT:</strong> {MOCK_DEVICE_INFO.config.dhtEnabled ? "Activo" : "Inactivo"}</div>
-          <div><strong>Sensor PIR:</strong> {MOCK_DEVICE_INFO.config.pirEnabled ? "Activo" : "Inactivo"}</div>
-          <div><strong>Versión config:</strong> v{MOCK_DEVICE_INFO.config.version}</div>
-        </div>
-      </section>
+      {/* Gestión de Dispositivos y Configuración */}
+      {deviceInfo && deviceInfo.config && (
+        <section style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
+          <h3 style={{ margin: "0 0 0.8rem 0" }}>Gestión y Configuración del Dispositivo</h3>
+          <p>Intervalo de muestreo actual: <strong>{deviceInfo.config.sampleIntervalSec}s</strong> | Versión de config: v{deviceInfo.config.version}</p>
+          
+          {userRole === 'admin' ? (
+            <button 
+              onClick={handleUpdateConfig}
+              style={{ background: "#2563eb", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", border: "none", cursor: "pointer", marginTop: "1rem" }}
+            >
+              Modificar Parámetros de Dispositivo (Admin)
+            </button>
+          ) : (
+            <p style={{ fontSize: "0.85rem", color: "#6b7280", marginTop: "0.5rem" }}>Modo consulta: Los permisos de administración están restringidos para tu usuario.</p>
+          )}
+        </section>
+      )}
     </main>
   );
 }
