@@ -85,7 +85,7 @@ export async function POST(req: NextRequest) {
   for (const r of body.readings) {
     if (!validReading(r, nowSec)) continue;
     // ID = ts del minuto → reenviar la misma lectura la sobrescribe, nunca la duplica
-    batch.set(ref.collection("readings").doc(String(r.ts)), {
+    const readingData = {
       ts: Timestamp.fromMillis(r.ts * 1000),
       tempAvg: r.tempAvg,
       humAvg: r.humAvg,
@@ -94,7 +94,18 @@ export async function POST(req: NextRequest) {
       occupied: r.occupied,
       comfort: r.comfort,
       alerts: r.alerts,
-    });
+    };
+
+    // Conserva cada medición original, identificada por el minuto de captura.
+    batch.set(ref.collection("readings").doc(String(r.ts)), readingData);
+
+    // Una lectura representativa por cada intervalo de 10 minutos.
+    // Se decide con el timestamp de captura, no con la hora de recepción:
+    // los lotes que llegan tarde tras una desconexión quedan en su intervalo correcto.
+    if (r.ts % 600 === 0) {
+      batch.set(ref.collection("history10m").doc(String(r.ts)), readingData);
+    }
+
     accepted++;
   }
 

@@ -19,6 +19,10 @@ services:
     devices:
       - /dev/gpiomem:/dev/gpiomem
       - /dev/gpiochip0:/dev/gpiochip0
+    # Las librerías de GPIO leen /proc/device-tree para identificar la placa y Docker lo oculta
+    # por defecto. Esta opción lo expone sin recurrir al modo privilegiado.
+    security_opt:
+      - systempaths=unconfined
     healthcheck:
       test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/healthy) )) -lt 60"]
       interval: 30s
