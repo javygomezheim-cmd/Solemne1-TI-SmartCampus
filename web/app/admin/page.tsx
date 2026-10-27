@@ -4,46 +4,41 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { auth, db } from '@/lib/firebase';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
-import { collection, query, orderBy, limit, onSnapshot, doc, updateDoc, getDoc, getDocs, where, Timestamp } from 'firebase/firestore';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
 
-type Reading = {
-  id: string;
-  ts?: Timestamp;
-  tempAvg?: number;
-  humAvg?: number;
-  samples?: number;
-  motionEvents?: number;
-  occupied?: boolean;
-  comfort?: number;
-  alerts?: string[];
-};
+import type { Reading } from '@/types/cliente';
+import MetricCard from '@/components/cliente/MetricCard';
+import useDeviceReadings from '@/hooks/cliente/useDeviceReadings';
+import useHistoryReadings from '@/hooks/cliente/useHistoryReadings';
 
-type DeviceConfig = {
-  sampleIntervalSec?: number;
-  version?: number | string;
-};
-type DeviceInfo = {
-  lastSeen?: Timestamp;
-  revoked?: boolean;
-  config?: DeviceConfig;
-};
+import FirestoreUsageEstimate from '@/components/admin/FirestoreUsageEstimate';
 
-const ORG_ID = "mi-org";
-const DEVICE_ID = "Oo2T8PLAS6jet80h8wLo";
+const ORG_ID = 'mi-org';
+const DEVICE_ID = 'Oo2T8PLAS6jet80h8wLo';
+
+function formatDate(ts?: Reading['ts']) {
+  if (!ts?.seconds) return 'Sin datos disponibles';
+
+  return new Date(ts.seconds * 1000).toLocaleString('es-CL', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  });
+}
 
 export default function DashboardPage() {
   const router = useRouter();
+
   const [isChecking, setIsChecking] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const [readings, setReadings] = useState<Reading[]>([]);
-  const [deviceInfo, setDeviceInfo] = useState<DeviceInfo | null>(null);
 
-  // Estados para el filtro de fechas
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [sampleIntervalInput, setSampleIntervalInput] = useState('60');
+  const [configInputEdited, setConfigInputEdited] = useState(false);
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configMessage, setConfigMessage] = useState('');
+  const [configError, setConfigError] = useState('');
 
+  // Verificar que el usuario tenga rol de administrador.
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
@@ -84,216 +79,624 @@ export default function DashboardPage() {
     return () => unsubscribe();
   }, [router]);
 
-  // Carga inicial en tiempo real (últimos 20 registros)
-  useEffect(() => {
-    if (!userEmail) return;
+  // Última lectura y configuración en tiempo real.
+  const {
+    readings,
+    config,
+    dataError,
+  } = useDeviceReadings(!isChecking && !!userEmail);
 
-    const q = query(
-      collection(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}/readings`),
-      orderBy('ts', 'desc'),
-      limit(20)
-    );
-    const unsubscribeReadings = onSnapshot(q, (snapshot) => {
-      const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setReadings(data);
-    });
+  // Historial compartido con la página del cliente.
+  const {
+    fechaInicio,
+    setFechaInicio,
+    fechaFin,
+    setFechaFin,
+    historial,
+    hayMasHistorial,
+    cargandoHistorial,
+    errorHistorial,
+    buscarHistorial,
+  } = useHistoryReadings();
 
-    const deviceRef = doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`);
-    const unsubscribeDevice = onSnapshot(deviceRef, (docSnap) => {
-      if (docSnap.exists()) setDeviceInfo(docSnap.data());
-    });
+  const latest = readings[0] ?? null;
 
-    return () => {
-      unsubscribeReadings();
-      unsubscribeDevice();
-    };
-  }, [userEmail]);
+  const handleUpdateConfig = async () => {
+    setConfigMessage('');
+    setConfigError('');
 
-  // Función para consultar históricos por rango de fechas bajo demanda
-  const handleQueryByDateRange = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!startDate || !endDate) {
-      alert("Por favor selecciona ambas fechas.");
+    const input = sampleIntervalInput.trim();
+
+    if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input))) {
+      setConfigError(
+        'Ingresa un intervalo en segundos usando un entero positivo.',
+      );
+      return;
+    }
+
+    const newInterval = Number(input);
+
+    if (newInterval < 10 || newInterval > 600) {
+      setConfigError('El intervalo debe estar entre 10 y 600 segundos.');
+      return;
+    }
+
+    const currentVersion = config?.version;
+    const versionNumber =
+      currentVersion == null ? 0 : Number(currentVersion);
+
+    if (
+      !Number.isSafeInteger(versionNumber) ||
+      versionNumber < 0 ||
+      versionNumber >= Number.MAX_SAFE_INTEGER
+    ) {
+      setConfigError('La versión actual de configuración no es válida.');
       return;
     }
 
     try {
-      setLoadingHistory(true);
-      const startTimestamp = Timestamp.fromDate(new Date(startDate + 'T00:00:00'));
-      const endTimestamp = Timestamp.fromDate(new Date(endDate + 'T23:59:59'));
+      setSavingConfig(true);
 
-      const readingsRef = collection(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}/readings`);
-      const q = query(
-        readingsRef,
-        where('ts', '>=', startTimestamp),
-        where('ts', '<=', endTimestamp),
-        orderBy('ts', 'desc'),
-        limit(100) // Límite de seguridad para evitar consumo excesivo
+      await updateDoc(
+        doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`),
+        {
+          'config.sampleIntervalSec': newInterval,
+          'config.version': versionNumber + 1,
+        },
       );
 
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-      setReadings(data);
+      setConfigInputEdited(false);
+      setConfigMessage(
+        `Configuración guardada: intervalo de ${newInterval} segundos. Versión ${versionNumber + 1}.`,
+      );
     } catch (error) {
-      console.error("Error al consultar histórico:", error);
-      alert("Error al filtrar por fechas. Revisa los índices compuestos en Firestore si es necesario.");
+      console.error('Error al actualizar la configuración:', error);
+
+      setConfigError(
+        'No se pudo guardar la configuración. Comprueba tus permisos y la conexión con Firestore.',
+      );
     } finally {
-      setLoadingHistory(false);
+      setSavingConfig(false);
     }
   };
 
-  const handleUpdateConfig = async () => {
-    try {
-      const deviceRef = doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`);
-      const newInterval = Math.floor(Math.random() * 20) + 10;
-      await updateDoc(deviceRef, {
-        "config.sampleIntervalSec": newInterval,
-        "config.version": Math.floor(Math.random() * 1000)
-      });
-      alert(`Éxito: Intervalo actualizado a ${newInterval}s.`);
-    } catch (error) {
-      console.error(error);
-      alert("Acceso denegado.");
-    }
-  };
-
-  if (isChecking) return <div style={{ padding: "5rem", textAlign: "center" }}>Verificando seguridad...</div>;
-
-  const latest = readings.length > 0 ? readings[0] : null;
+  if (isChecking) {
+    return (
+      <main
+        style={{
+          minHeight: '100vh',
+          display: 'grid',
+          placeItems: 'center',
+          background: '#f8fafc',
+          color: '#475569',
+          fontFamily: 'system-ui, sans-serif',
+        }}
+      >
+        Verificando acceso...
+      </main>
+    );
+  }
 
   return (
-    <main style={{ padding: "2rem", fontFamily: "system-ui, sans-serif", maxWidth: "1100px", margin: "0 auto", color: "#1f2937" }}>
-      <header style={{ marginBottom: "2rem", borderBottom: "1px solid #e5e7eb", paddingBottom: "1.2rem", display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "1rem" }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: "1.75rem", fontWeight: 700 }}>Monitoreo IoT Smart Campus</h1>
-          <p style={{ margin: "0.4rem 0 0", color: "#6b7280" }}>Dispositivo: {DEVICE_ID}</p>
-          <p style={{ margin: "0.4rem 0 0", color: "#2563eb", fontWeight: 600 }}>Usuario: {userEmail} | Rol: {userRole || 'Sin rol'}</p>
-        </div>
-        <div>
+    <main
+      style={{
+        minHeight: '100vh',
+        background: '#f4f7fb',
+        fontFamily: 'system-ui, sans-serif',
+        color: '#0f172a',
+      }}
+    >
+      <header
+        style={{
+          background: '#0f172a',
+          color: '#fff',
+          padding: 24,
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 1150,
+            margin: '0 auto',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: 18,
+            flexWrap: 'wrap',
+          }}
+        >
+          <div>
+            <p
+              style={{
+                margin: '0 0 6px',
+                fontSize: 12,
+                letterSpacing: 2,
+                color: '#93c5fd',
+                fontWeight: 700,
+              }}
+            >
+              TI SMART CAMPUS · ADMINISTRACIÓN
+            </p>
+
+            <h1 style={{ fontSize: 26, margin: 0 }}>
+              Panel de monitoreo
+            </h1>
+
+            <p
+              style={{
+                color: '#cbd5e1',
+                margin: '8px 0 0',
+                fontSize: 14,
+              }}
+            >
+              {userEmail} · Rol: {userRole}
+            </p>
+          </div>
+
           <button
             onClick={async () => {
               await signOut(auth);
               router.replace('/');
             }}
             style={{
-              background: '#ef4444',
-              color: 'white',
-              padding: '0.4rem 0.8rem',
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer'
+              border: '1px solid #475569',
+              background: '#1e293b',
+              color: '#fff',
+              borderRadius: 10,
+              padding: '11px 16px',
+              cursor: 'pointer',
+              fontWeight: 600,
             }}
           >
-            Cerrar Sesión
+            Cerrar sesión
           </button>
         </div>
       </header>
 
-      {/* Tarjetas de Métricas en Tiempo Real */}
-      {latest && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-            <span style={{ color: "#6b7280", fontWeight: 600 }}>Temperatura Promedio</span>
-            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#ea580c" }}>{latest.tempAvg} °C</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-            <span style={{ color: "#6b7280", fontWeight: 600 }}>Humedad Relativa</span>
-            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#0284c7" }}>{latest.humAvg} %</div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-            <span style={{ color: "#6b7280", fontWeight: 600 }}>Ocupación</span>
-            <div style={{ fontSize: "1.8rem", fontWeight: 700, color: latest.occupied ? "#16a34a" : "#6b7280" }}>
-              {latest.occupied ? "Ocupada" : "Despejada"}
-            </div>
-          </div>
-          <div style={{ border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-            <span style={{ color: "#6b7280", fontWeight: 600 }}>Eventos PIR</span>
-            <div style={{ fontSize: "2.2rem", fontWeight: 700, color: "#7c3aed" }}>{latest.motionEvents ?? 0}</div>
-          </div>
-        </div>
-      )}
+      <div
+        style={{
+          maxWidth: 1150,
+          margin: '0 auto',
+          padding: '32px 20px 48px',
+        }}
+      >
+        {/* Métricas actuales: mismo componente que el cliente. */}
+        <section style={{ marginBottom: 24 }}>
+          <h2 style={{ fontSize: 23, margin: '0 0 8px' }}>
+            Resumen actual
+          </h2>
 
-      {/* Selector de Rango de Fechas para Históricos */}
-      <section style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: "10px", padding: "1.25rem", marginBottom: "2rem" }}>
-        <h3 style={{ margin: "0 0 0.8rem 0", fontSize: "1rem" }}>Consulta de Históricos por Rango de Fechas</h3>
-        <form onSubmit={handleQueryByDateRange} style={{ display: "flex", gap: "1rem", flexWrap: "wrap", alignItems: "center" }}>
-          <div>
-            <label style={{ display: "block", fontSize: "0.8rem", color: "#64748b", marginBottom: "0.2rem" }}>Desde:</label>
-            <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #cbd5e1" }} />
-          </div>
-          <div>
-            <label style={{ display: "block", fontSize: "0.8rem", color: "#64748b", marginBottom: "0.2rem" }}>Hasta:</label>
-            <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} style={{ padding: "0.4rem", borderRadius: "6px", border: "1px solid #cbd5e1" }} />
-          </div>
-          <div style={{ alignSelf: "flex-end" }}>
-            <button type="submit" disabled={loadingHistory} style={{ background: "#0f172a", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", border: "none", cursor: "pointer" }}>
-              {loadingHistory ? "Consultando..." : "Consultar Histórico"}
-            </button>
-          </div>
-        </form>
-      </section>
+          <p style={{ margin: 0, color: '#64748b', fontSize: 14 }}>
+            Estado ambiental del dispositivo en tiempo real.
+          </p>
+        </section>
 
-      {/* Tabla de Histórico / Resultados */}
-      <section style={{ background: "#ffffff", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.5rem", boxShadow: "0 1px 3px rgba(0,0,0,0.05)", marginBottom: "2rem" }}>
-        <h2 style={{ fontSize: "1.1rem", fontWeight: 600, margin: "0 0 1rem 0" }}>Registros Mostrados ({readings.length})</h2>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", textAlign: "left", fontSize: "0.875rem" }}>
-            <thead>
-              <tr style={{ borderBottom: "2px solid #e5e7eb", color: "#4b5563" }}>
-                <th style={{ padding: "0.6rem" }}>Fecha y Hora</th>
-                <th style={{ padding: "0.6rem" }}>Temp Media</th>
-                <th style={{ padding: "0.6rem" }}>Humedad Media</th>
-                <th style={{ padding: "0.6rem" }}>Presencia</th>
-                <th style={{ padding: "0.6rem" }}>Eventos PIR</th>
-                <th style={{ padding: "0.6rem" }}>Alertas</th>
-                <th style={{ padding: "0.6rem" }}>Muestras</th>
-              </tr>
-            </thead>
-            <tbody>
-              {readings.length === 0 ? (
-                <tr><td colSpan={7} style={{ padding: "1rem", textAlign: "center", color: "#6b7280" }}>No hay registros para este período.</td></tr>
-              ) : (
-                readings.map((r) => (
-                  <tr key={r.id} style={{ borderBottom: "1px solid #f3f4f6" }}>
-                    <td style={{ padding: "0.6rem", fontWeight: 500 }}>
-                      {r.ts?.seconds ? new Date(r.ts.seconds * 1000).toLocaleString() : 'N/A'}
-                    </td>
-                    <td style={{ padding: "0.6rem", fontWeight: 600, color: "#ea580c" }}>{r.tempAvg} °C</td>
-                    <td style={{ padding: "0.6rem", fontWeight: 600, color: "#0284c7" }}>{r.humAvg} %</td>
-                    <td style={{ padding: "0.6rem" }}>
-                      <span style={{ padding: "0.2rem 0.5rem", borderRadius: "4px", fontSize: "0.75rem", fontWeight: 600, background: r.occupied ? "#dcfce7" : "#f3f4f6", color: r.occupied ? "#15803d" : "#4b5563" }}>
-                        {r.occupied ? "Ocupada" : "Despejada"}
-                      </span>
-                    </td>
-                    <td style={{ padding: "0.6rem" }}>{r.motionEvents ?? 0}</td>
-                    <td style={{ padding: "0.6rem", color: "#dc2626" }}>{r.alerts?.join(', ') || 'Ninguna'}</td>
-                    <td style={{ padding: "0.6rem", color: "#6b7280" }}>{r.samples}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+        <section
+          style={{
+            display: 'grid',
+            gridTemplateColumns:
+              'repeat(auto-fit, minmax(min(100%, 230px), 1fr))',
+            gap: 16,
+          }}
+        >
+          <MetricCard
+            title="Temperatura"
+            value={latest?.tempAvg ?? '--'}
+            unit="°C"
+            detail={`Máximo: ${config?.tempMax ?? '--'} °C`}
+            color="#ea580c"
+            icon="🌡️"
+          />
 
-      {/* Gestión de Dispositivos y Configuración */}
-      {deviceInfo && deviceInfo.config && (
-        <section style={{ background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: "10px", padding: "1.25rem" }}>
-          <h3 style={{ margin: "0 0 0.8rem 0" }}>Gestión y Configuración del Dispositivo</h3>
-          <p>Intervalo de muestreo actual: <strong>{deviceInfo.config.sampleIntervalSec}s</strong> | Versión de config: v{deviceInfo.config.version}</p>
+          <MetricCard
+            title="Humedad relativa"
+            value={latest?.humAvg ?? '--'}
+            unit="%"
+            detail={`Máximo: ${config?.humMax ?? '--'}%`}
+            color="#0284c7"
+            icon="💧"
+          />
 
-          {userRole === 'admin' ? (
-            <button
-              onClick={handleUpdateConfig}
-              style={{ background: "#2563eb", color: "white", padding: "0.5rem 1rem", borderRadius: "6px", border: "none", cursor: "pointer", marginTop: "1rem" }}
+          <MetricCard
+            title="Ocupación"
+            value={
+              latest
+                ? latest.occupied
+                  ? 'Ocupada'
+                  : 'Despejada'
+                : '--'
+            }
+            detail="Estado detectado por el sensor"
+            color={latest?.occupied ? '#16a34a' : '#64748b'}
+            icon="👥"
+          />
+
+          <MetricCard
+            title="Eventos de movimiento"
+            value={latest?.motionEvents ?? '--'}
+            detail={`Muestras: ${latest?.samples ?? '--'}`}
+            color="#7c3aed"
+            icon="📡"
+          />
+        </section>
+
+        {dataError && (
+          <p
+            role="alert"
+            style={{
+              marginTop: 18,
+              padding: 14,
+              borderRadius: 10,
+              background: '#fff7ed',
+              color: '#9a3412',
+            }}
+          >
+            {dataError}
+          </p>
+        )}
+
+        {/* Historial: mismo filtro y paginación que el cliente. */}
+        <section
+          style={{
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 18,
+            padding: 24,
+            marginTop: 24,
+            boxShadow: '0 4px 18px rgba(15,23,42,0.04)',
+          }}
+        >
+          <h2 style={{ margin: '0 0 8px', fontSize: 20 }}>
+            Historial de mediciones
+          </h2>
+
+          <p
+            style={{
+              color: '#64748b',
+              fontSize: 14,
+              marginTop: 0,
+            }}
+          >
+            Lecturas representativas cada 10 minutos. Selecciona un rango de
+            fechas.
+          </p>
+
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'end',
+              gap: 12,
+              marginTop: 18,
+            }}
+          >
+            <label
+              style={{
+                display: 'grid',
+                gap: 6,
+                flex: '1 1 180px',
+                fontSize: 14,
+              }}
             >
-              Modificar Parámetros de Dispositivo (Admin)
+              Fecha inicial
+              <input
+                type="date"
+                value={fechaInicio}
+                max={fechaFin || undefined}
+                onChange={(event) => setFechaInicio(event.target.value)}
+                style={{
+                  padding: 10,
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 8,
+                }}
+              />
+            </label>
+
+            <label
+              style={{
+                display: 'grid',
+                gap: 6,
+                flex: '1 1 180px',
+                fontSize: 14,
+              }}
+            >
+              Fecha final
+              <input
+                type="date"
+                value={fechaFin}
+                min={fechaInicio || undefined}
+                onChange={(event) => setFechaFin(event.target.value)}
+                style={{
+                  padding: 10,
+                  border: '1px solid #cbd5e1',
+                  borderRadius: 8,
+                }}
+              />
+            </label>
+
+            <button
+              onClick={() => void buscarHistorial(false)}
+              disabled={cargandoHistorial}
+              style={{
+                padding: '11px 18px',
+                background: '#2563eb',
+                color: '#fff',
+                border: 0,
+                borderRadius: 8,
+                cursor: cargandoHistorial ? 'wait' : 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              Buscar
             </button>
-          ) : (
-            <p style={{ fontSize: "0.85rem", color: "#6b7280", marginTop: "0.5rem" }}>Modo consulta: Los permisos de administración están restringidos para tu usuario.</p>
+          </div>
+
+          {errorHistorial && (
+            <p role="alert" style={{ color: '#b91c1c', marginTop: 16 }}>
+              {errorHistorial}
+            </p>
+          )}
+
+          {cargandoHistorial && (
+            <p style={{ color: '#64748b', marginTop: 18 }}>
+              Cargando historial...
+            </p>
+          )}
+
+          {!cargandoHistorial &&
+            historial.length === 0 &&
+            !errorHistorial && (
+              <p style={{ color: '#64748b', marginTop: 18 }}>
+                Selecciona las fechas y pulsa Buscar. Todavía no se ha
+                consultado el historial.
+              </p>
+            )}
+
+          {historial.length > 0 && (
+            <>
+              <div style={{ overflowX: 'auto', marginTop: 22 }}>
+                <table
+                  style={{
+                    width: '100%',
+                    borderCollapse: 'collapse',
+                    fontSize: 14,
+                    textAlign: 'left',
+                  }}
+                >
+                  <thead>
+                    <tr style={{ background: '#f1f5f9' }}>
+                      {[
+                        'Fecha',
+                        'Temperatura',
+                        'Humedad',
+                        'Ocupación',
+                        'Eventos de movimiento',
+                      ].map((titulo) => (
+                        <th
+                          key={titulo}
+                          style={{
+                            padding: 12,
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {titulo}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {historial.map((lectura) => (
+                      <tr key={lectura.id}>
+                        <td
+                          style={{
+                            padding: 12,
+                            borderBottom: '1px solid #e5e7eb',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {formatDate(lectura.ts)}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: 12,
+                            borderBottom: '1px solid #e5e7eb',
+                          }}
+                        >
+                          {lectura.tempAvg ?? '--'} °C
+                        </td>
+
+                        <td
+                          style={{
+                            padding: 12,
+                            borderBottom: '1px solid #e5e7eb',
+                          }}
+                        >
+                          {lectura.humAvg ?? '--'} %
+                        </td>
+
+                        <td
+                          style={{
+                            padding: 12,
+                            borderBottom: '1px solid #e5e7eb',
+                          }}
+                        >
+                          {lectura.occupied == null
+                            ? '--'
+                            : lectura.occupied
+                              ? 'Ocupada'
+                              : 'Despejada'}
+                        </td>
+
+                        <td
+                          style={{
+                            padding: 12,
+                            borderBottom: '1px solid #e5e7eb',
+                          }}
+                        >
+                          {lectura.motionEvents ?? '--'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                  marginTop: 18,
+                }}
+              >
+                <span style={{ color: '#64748b', fontSize: 13 }}>
+                  {historial.length} mediciones cargadas (50 por página).
+                </span>
+
+                {hayMasHistorial && (
+                  <button
+                    onClick={() => void buscarHistorial(true)}
+                    disabled={cargandoHistorial}
+                    style={{
+                      padding: '10px 16px',
+                      background: '#000',
+                      color: '#fff',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: 8,
+                      cursor: cargandoHistorial ? 'wait' : 'pointer',
+                    }}
+                  >
+                    Cargar 50 más
+                  </button>
+                )}
+              </div>
+            </>
           )}
         </section>
-      )}
+
+        {/* Configuración del dispositivo: se mantiene editable para admin. */}
+        <section
+          style={{
+            background: '#fff',
+            border: '1px solid #e5e7eb',
+            borderRadius: 18,
+            padding: 24,
+            marginTop: 24,
+            boxShadow: '0 4px 18px rgba(15,23,42,0.04)',
+          }}
+        >
+          <h2 style={{ margin: '0 0 16px', fontSize: 20 }}>
+            Configuración del dispositivo
+          </h2>
+
+          <p>
+            ID del dispositivo: <strong>{DEVICE_ID}</strong>
+          </p>
+
+          <p>
+            Intervalo actual:{' '}
+            <strong>{config?.sampleIntervalSec ?? 'No configurado'} s</strong>
+          </p>
+
+          <p>
+            Versión de configuración:{' '}
+            <strong>{config?.version ?? 'No configurada'}</strong>
+          </p>
+
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleUpdateConfig();
+            }}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              maxWidth: 360,
+              marginTop: 20,
+            }}
+          >
+            <label
+              htmlFor="sampleInterval"
+              style={{ fontWeight: 600, fontSize: 14 }}
+            >
+              Nuevo intervalo de muestreo (segundos)
+            </label>
+
+            <input
+              id="sampleInterval"
+              type="number"
+              min="10"
+              max="600"
+              step="1"
+              required
+              value={
+                configInputEdited
+                  ? sampleIntervalInput
+                  : String(config?.sampleIntervalSec ?? 60)
+              }
+              onChange={(event) => {
+                setSampleIntervalInput(event.target.value);
+                setConfigInputEdited(true);
+              }}
+              style={{
+                padding: 11,
+                borderRadius: 8,
+                border: '1px solid #cbd5e1',
+                background: '#fff',
+                color: '#1f2937',
+              }}
+            />
+
+            <button
+              type="submit"
+              disabled={savingConfig}
+              style={{
+                background: savingConfig ? '#94a3b8' : '#2563eb',
+                color: '#fff',
+                padding: '11px 16px',
+                borderRadius: 8,
+                border: 0,
+                cursor: savingConfig ? 'not-allowed' : 'pointer',
+                fontWeight: 600,
+              }}
+            >
+              {savingConfig ? 'Guardando...' : 'Guardar configuración'}
+            </button>
+
+            {configMessage && (
+              <p role="status" style={{ color: '#15803d', fontSize: 14 }}>
+                {configMessage}
+              </p>
+            )}
+
+            {configError && (
+              <p role="alert" style={{ color: '#dc2626', fontSize: 14 }}>
+                {configError}
+              </p>
+            )}
+          </form>
+        </section>
+        
+        <FirestoreUsageEstimate
+          key={config?.sampleIntervalSec ?? 60}
+          sampleIntervalSec={config?.sampleIntervalSec ?? 60}
+        />
+        
+        <p
+          style={{
+            marginTop: 20,
+            color: '#94a3b8',
+            fontSize: 12,
+            textAlign: 'center',
+          }}
+        >
+          Las métricas se actualizan con las nuevas lecturas de Firestore.
+        </p>
+      </div>
     </main>
   );
 }
