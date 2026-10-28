@@ -219,12 +219,21 @@ export default function ClientePage() {
           />
 
           <MetricCard
-            title="Eventos de movimiento"
-            value={latest?.motionEvents ?? '--'}
+            title="Comodidad térmica"
+            value={latest?.comfort ?? '--'}
             detail={`Muestras: ${latest?.samples ?? '--'}`}
-            color="#7c3aed"
-            icon="📡"
+          color="#7c3aed"
+          icon={
+            latest?.comfort == null
+              ? '🎚️'
+              : latest.comfort < 40
+                ? '😟'
+                : latest.comfort < 70
+                  ? '😐'
+                  : '😊'
+          }
           />
+
         </section>
 
         <section
@@ -456,6 +465,7 @@ export default function ClientePage() {
                         'Humedad',
                         'Ocupación',
                         'Eventos de movimiento',
+                        'Comodidad térmica',
                       ].map((titulo) => (
                         <th key={titulo} style={{ padding: 12, whiteSpace: 'nowrap' }}>
                           {titulo}
@@ -490,6 +500,9 @@ export default function ClientePage() {
                         </td>
                         <td style={{ padding: 12, borderBottom: '1px solid #e5e7eb' }}>
                           {lectura.motionEvents ?? '--'}
+                        </td>
+                        <td style={{ padding: 12, borderBottom: '1px solid #e5e7eb' }}>
+                          {lectura.comfort ?? '--'} 
                         </td>
                       </tr>
                     ))}

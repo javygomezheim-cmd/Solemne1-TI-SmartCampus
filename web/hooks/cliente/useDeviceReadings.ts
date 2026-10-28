@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -23,7 +22,23 @@ export default function useDeviceReadings(enabled: boolean) {
   const [dataError, setDataError] = useState('');
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      setReadings([]);
+      setConfig(null);
+      setDataError('');
+      return;
+    }
+
+    let active = true;
+
+    const handleError = (message: string, error: Error) => {
+      if (!active) return;
+
+      // Evita tratar la desconexión como un error visible
+      // si el hook ya fue desactivado.
+      console.error(message, error);
+      setDataError(message);
+    };
 
     const readingsRef = collection(
       db,
@@ -39,6 +54,8 @@ export default function useDeviceReadings(enabled: boolean) {
     const unsubscribeReadings = onSnapshot(
       readingsQuery,
       (snapshot) => {
+        if (!active) return;
+
         setReadings(
           snapshot.docs.map((item) => ({
             id: item.id,
@@ -49,14 +66,15 @@ export default function useDeviceReadings(enabled: boolean) {
         setDataError('');
       },
       (error) => {
-        console.error('Error leyendo mediciones:', error);
-        setDataError('No se pudieron cargar las mediciones.');
+        handleError('No se pudieron cargar las mediciones.', error);
       },
     );
 
     const unsubscribeDevice = onSnapshot(
       doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`),
       (snapshot) => {
+        if (!active) return;
+
         if (snapshot.exists()) {
           const data = snapshot.data();
 
@@ -65,15 +83,17 @@ export default function useDeviceReadings(enabled: boolean) {
             name: data.name ?? data.config?.name,
             revoked: data.revoked,
           });
+        } else {
+          setConfig(null);
         }
       },
       (error) => {
-        console.error('Error leyendo configuración:', error);
-        setDataError('No se pudo cargar la configuración del dispositivo.');
+        handleError('No se pudo cargar la configuración del dispositivo.', error);
       },
     );
 
     return () => {
+      active = false;
       unsubscribeReadings();
       unsubscribeDevice();
     };

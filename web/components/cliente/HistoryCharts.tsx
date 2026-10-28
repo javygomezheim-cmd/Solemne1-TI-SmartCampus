@@ -1,4 +1,3 @@
-
 'use client';
 
 import {
@@ -36,12 +35,9 @@ export default function HistoryCharts({
         }),
         temperatura: lectura.tempAvg ?? null,
         humedad: lectura.humAvg ?? null,
-        ocupacion:
-          lectura.occupied == null
-            ? null
-            : lectura.occupied
-              ? 1
-              : 0,
+        comfort: lectura.comfort == null
+          ? null
+          : lectura.comfort,
         movimiento: lectura.motionEvents ?? null,
       };
     });
@@ -171,7 +167,7 @@ export default function HistoryCharts({
 
       <article style={tarjeta}>
         <h3 style={{ margin: '0 0 6px', fontSize: 18 }}>
-          Ocupación de la sala
+          Comodidad térmica
         </h3>
 
         <p
@@ -181,7 +177,7 @@ export default function HistoryCharts({
             marginTop: 0,
           }}
         >
-          Estado registrado en cada intervalo de 10 minutos.
+           Índice de confort de 0 a 100.
         </p>
 
         <div style={{ width: '100%', height: 250 }}>
@@ -205,31 +201,28 @@ export default function HistoryCharts({
               />
 
               <YAxis
-                domain={[0, 1]}
-                ticks={[0, 1]}
-                tickFormatter={(valor) =>
-                  valor === 1 ? 'Ocupada' : 'Despejada'
-                }
-                width={75}
+                domain={['auto', 'auto']}
                 tick={{ fontSize: 11 }}
+                width={65}
               />
 
               <Tooltip
                 formatter={(valor) => [
-                  valor === 1 ? 'Ocupada' : 'Despejada',
-                  'Estado',
+                  valor,
+                  'Comodidad térmica',
                 ]}
+                labelFormatter={(hora) => `Hora: ${hora}`}
               />
 
               <Line
-                type="stepAfter"
-                dataKey="ocupacion"
-                name="Estado"
+                type="monotone"
+                dataKey="comfort"
+                name="Comodidad térmica"
                 stroke="#16a34a"
                 strokeWidth={2}
                 dot={false}
                 connectNulls={false}
-              />
+              /> 
             </LineChart>
           </ResponsiveContainer>
         </div>
