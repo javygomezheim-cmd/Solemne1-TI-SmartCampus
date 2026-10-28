@@ -33,6 +33,9 @@ export default function DashboardPage() {
   const [userRole, setUserRole] = useState<string | null>(null);
 
   const [sampleIntervalInput, setSampleIntervalInput] = useState('60');
+  const [humidityMaxInput, setHumidityMaxInput] = useState('');
+  const [temperatureMaxInput, setTemperatureMaxInput] = useState('');
+
   const [configInputEdited, setConfigInputEdited] = useState(false);
   const [savingConfig, setSavingConfig] = useState(false);
   const [configMessage, setConfigMessage] = useState('');
@@ -86,6 +89,13 @@ export default function DashboardPage() {
     dataError,
   } = useDeviceReadings(!isChecking && !!userEmail);
 
+  useEffect(() => {
+    if (config) {
+      setHumidityMaxInput(String(config.humMax ?? 70));
+      setTemperatureMaxInput(String(config.tempMax ?? 28));
+    }
+  }, [config?.version]);
+
   // Historial compartido con la página del cliente.
   const {
     fechaInicio,
@@ -105,19 +115,54 @@ export default function DashboardPage() {
     setConfigMessage('');
     setConfigError('');
 
-    const input = sampleIntervalInput.trim();
+    const intervalValue = sampleIntervalInput.trim();
+    const humidityValue = humidityMaxInput.trim();
+    const temperatureValue = temperatureMaxInput.trim();
 
-    if (!/^[1-9]\d*$/.test(input) || !Number.isSafeInteger(Number(input))) {
-      setConfigError(
-        'Ingresa un intervalo en segundos usando un entero positivo.',
-      );
+    // Validar intervalo
+    if (!/^[1-9]\d*$/.test(intervalValue)) {
+      setConfigError('Ingresa un intervalo entero positivo.');
       return;
     }
 
-    const newInterval = Number(input);
+    const newInterval = Number(intervalValue);
 
-    if (newInterval < 10 || newInterval > 600) {
+    if (
+      !Number.isSafeInteger(newInterval) ||
+      newInterval < 10 ||
+      newInterval > 600
+    ) {
       setConfigError('El intervalo debe estar entre 10 y 600 segundos.');
+      return;
+    }
+
+    // Validar humedad
+    if (humidityValue === '') {
+      setConfigError('Ingresa la humedad máxima.');
+      return;
+    }
+
+    const newHumidity = Number(humidityValue);
+
+    if (
+      !Number.isFinite(newHumidity) ||
+      newHumidity < 0 ||
+      newHumidity > 100
+    ) {
+      setConfigError('La humedad máxima debe estar entre 0 y 100 %.');
+      return;
+    }
+
+    // Validar temperatura
+    if (temperatureValue === '') {
+      setConfigError('Ingresa la temperatura máxima.');
+      return;
+    }
+
+    const newTemperature = Number(temperatureValue);
+
+    if (!Number.isFinite(newTemperature)) {
+      setConfigError('Ingresa una temperatura válida.');
       return;
     }
 
@@ -141,13 +186,16 @@ export default function DashboardPage() {
         doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`),
         {
           'config.sampleIntervalSec': newInterval,
+          'config.humMax': newHumidity,
+          'config.tempMax': newTemperature,
           'config.version': versionNumber + 1,
         },
       );
 
       setConfigInputEdited(false);
+
       setConfigMessage(
-        `Configuración guardada: intervalo de ${newInterval} segundos. Versión ${versionNumber + 1}.`,
+        `Configuración guardada correctamente. Intervalo: ${newInterval} s, humedad máxima: ${newHumidity} %, temperatura máxima: ${newTemperature} °C. Versión ${versionNumber + 1}.`,
       );
     } catch (error) {
       console.error('Error al actualizar la configuración:', error);
@@ -577,7 +625,9 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* Configuración del dispositivo: se mantiene editable para admin. */}
+
+
+        {/* Configuración del dispositivo */}
         <section
           style={{
             background: '#fff',
@@ -588,104 +638,269 @@ export default function DashboardPage() {
             boxShadow: '0 4px 18px rgba(15,23,42,0.04)',
           }}
         >
-          <h2 style={{ margin: '0 0 16px', fontSize: 20 }}>
+          <h2 style={{ margin: '0 0 24px', fontSize: 20 }}>
             Configuración del dispositivo
           </h2>
 
-          <p>
-            ID del dispositivo: <strong>{DEVICE_ID}</strong>
-          </p>
-
-          <p>
-            Intervalo actual:{' '}
-            <strong>{config?.sampleIntervalSec ?? 'No configurado'} s</strong>
-          </p>
-
-          <p>
-            Versión de configuración:{' '}
-            <strong>{config?.version ?? 'No configurada'}</strong>
-          </p>
-
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void handleUpdateConfig();
-            }}
+          <div
             style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-              maxWidth: 360,
-              marginTop: 20,
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 300px), 1fr))',
+              gap: 32,
+              alignItems: 'start',
             }}
           >
-            <label
-              htmlFor="sampleInterval"
-              style={{ fontWeight: 600, fontSize: 14 }}
-            >
-              Nuevo intervalo de muestreo (segundos)
-            </label>
+            {/* COLUMNA IZQUIERDA: Información actual */}
+            <div>
+              <h3
+                style={{
+                  margin: '0 0 20px',
+                  fontSize: 16,
+                  color: '#475569',
+                }}
+              >
+                Información actual
+              </h3>
 
-            <input
-              id="sampleInterval"
-              type="number"
-              min="10"
-              max="600"
-              step="1"
-              required
-              value={
-                configInputEdited
-                  ? sampleIntervalInput
-                  : String(config?.sampleIntervalSec ?? 60)
-              }
-              onChange={(event) => {
-                setSampleIntervalInput(event.target.value);
-                setConfigInputEdited(true);
-              }}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                <p style={{ margin: 0, overflowWrap: 'anywhere' }}>
+                  ID del dispositivo:{' '}
+                  <strong>{DEVICE_ID}</strong>
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  Intervalo actual:{' '}
+                  <strong>
+                    {config?.sampleIntervalSec ?? 'No configurado'} s
+                  </strong>
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  Humedad máxima actual:{' '}
+                  <strong>
+                    {config?.humMax ?? 'No configurada'} %
+                  </strong>
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  Temperatura máxima actual:{' '}
+                  <strong>
+                    {config?.tempMax ?? 'No configurada'} °C
+                  </strong>
+                </p>
+
+                <p style={{ margin: 0 }}>
+                  Versión de configuración:{' '}
+                  <strong>
+                    {config?.version ?? 'No configurada'}
+                  </strong>
+                </p>
+              </div>
+            </div>
+
+            {/* COLUMNA DERECHA: Formulario de edición */}
+            <div
               style={{
-                padding: 11,
-                borderRadius: 8,
-                border: '1px solid #cbd5e1',
-                background: '#fff',
-                color: '#1f2937',
-              }}
-            />
-
-            <button
-              type="submit"
-              disabled={savingConfig}
-              style={{
-                background: savingConfig ? '#94a3b8' : '#2563eb',
-                color: '#fff',
-                padding: '11px 16px',
-                borderRadius: 8,
-                border: 0,
-                cursor: savingConfig ? 'not-allowed' : 'pointer',
-                fontWeight: 600,
+                borderLeft: '1px solid #e5e7eb',
+                paddingLeft: 24,
               }}
             >
-              {savingConfig ? 'Guardando...' : 'Guardar configuración'}
-            </button>
+              <h3
+                style={{
+                  margin: '0 0 20px',
+                  fontSize: 16,
+                  color: '#475569',
+                }}
+              >
+                Editar configuración
+              </h3>
 
-            {configMessage && (
-              <p role="status" style={{ color: '#15803d', fontSize: 14 }}>
-                {configMessage}
-              </p>
-            )}
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void handleUpdateConfig();
+                }}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 16,
+                }}
+              >
+                {/* Intervalo */}
+                <div>
+                  <label
+                    htmlFor="sampleInterval"
+                    style={{
+                      display: 'block',
+                      fontWeight: 600,
+                      fontSize: 14,
+                      marginBottom: 7,
+                    }}
+                  >
+                    Intervalo de muestreo (segundos)
+                  </label>
 
-            {configError && (
-              <p role="alert" style={{ color: '#dc2626', fontSize: 14 }}>
-                {configError}
-              </p>
-            )}
-          </form>
+                  <input
+                    id="sampleInterval"
+                    type="number"
+                    min="10"
+                    max="600"
+                    step="1"
+                    required
+                    value={
+                      configInputEdited
+                        ? sampleIntervalInput
+                        : String(config?.sampleIntervalSec ?? 60)
+                    }
+                    onChange={(event) => {
+                      setSampleIntervalInput(event.target.value);
+                      setConfigInputEdited(true);
+                    }}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: 11,
+                      borderRadius: 8,
+                      border: '1px solid #cbd5e1',
+                      background: '#fff',
+                      color: '#1f2937',
+                    }}
+                  />
+                </div>
+
+                {/* Humedad máxima */}
+                <div>
+                  <label
+                    htmlFor="humidityMax"
+                    style={{
+                      display: 'block',
+                      fontWeight: 600,
+                      fontSize: 14,
+                      marginBottom: 7,
+                    }}
+                  >
+                    Humedad máxima (%)
+                  </label>
+
+                  <input
+                    id="humidityMax"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    required
+                    value={humidityMaxInput}
+                    onFocus={() => {
+                      if (humidityMaxInput === '' && config?.humMax != null) {
+                        setHumidityMaxInput(String(config.humMax));
+                      }
+                    }}
+                    onChange={(event) => {
+                      setHumidityMaxInput(event.target.value);
+                    }}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: 11,
+                      borderRadius: 8,
+                      border: '1px solid #cbd5e1',
+                      background: '#fff',
+                      color: '#1f2937',
+                    }}
+                  />
+                </div>
+
+                {/* Temperatura máxima */}
+                <div>
+                  <label
+                    htmlFor="temperatureMax"
+                    style={{
+                      display: 'block',
+                      fontWeight: 600,
+                      fontSize: 14,
+                      marginBottom: 7,
+                    }}
+                  >
+                    Temperatura máxima (°C)
+                  </label>
+
+                  <input
+                    id="temperatureMax"
+                    type="number"
+                    step="0.1"
+                    required
+                    value={temperatureMaxInput}
+                    onFocus={() => {
+                      if (
+                        temperatureMaxInput === '' &&
+                        config?.tempMax != null
+                      ) {
+                        setTemperatureMaxInput(String(config.tempMax));
+                      }
+                    }}
+                    onChange={(event) => {
+                      setTemperatureMaxInput(event.target.value);
+                    }}
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      padding: 11,
+                      borderRadius: 8,
+                      border: '1px solid #cbd5e1',
+                      background: '#fff',
+                      color: '#1f2937',
+                    }}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={savingConfig}
+                  style={{
+                    background: savingConfig ? '#94a3b8' : '#2563eb',
+                    color: '#fff',
+                    padding: '12px 16px',
+                    borderRadius: 8,
+                    border: 0,
+                    cursor: savingConfig ? 'not-allowed' : 'pointer',
+                    fontWeight: 600,
+                    marginTop: 4,
+                  }}
+                >
+                  {savingConfig
+                    ? 'Guardando...'
+                    : 'Guardar configuración'}
+                </button>
+
+                {configMessage && (
+                  <p
+                    role="status"
+                    style={{ color: '#15803d', fontSize: 14, margin: 0 }}
+                  >
+                    {configMessage}
+                  </p>
+                )}
+
+                {configError && (
+                  <p
+                    role="alert"
+                    style={{ color: '#dc2626', fontSize: 14, margin: 0 }}
+                  >
+                    {configError}
+                  </p>
+                )}
+              </form>
+            </div>
+          </div>
         </section>
-        
+
+
+
         <FirestoreUsageEstimate
           key={config?.sampleIntervalSec ?? 60}
           sampleIntervalSec={config?.sampleIntervalSec ?? 60}
         />
-        
+
         <p
           style={{
             marginTop: 20,
