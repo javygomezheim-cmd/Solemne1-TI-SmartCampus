@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -13,16 +14,18 @@ import {
 import { db } from '@/lib/firebase';
 import type { Reading, DeviceConfig } from '@/types/cliente';
 
-const ORG_ID = 'mi-org';
 const DEVICE_ID = 'Oo2T8PLAS6jet80h8wLo';
 
-export default function useDeviceReadings(enabled: boolean) {
+export default function useDeviceReadings(
+  orgId: string,
+  enabled: boolean,
+) {
   const [readings, setReadings] = useState<Reading[]>([]);
   const [config, setConfig] = useState<DeviceConfig | null>(null);
   const [dataError, setDataError] = useState('');
 
   useEffect(() => {
-    if (!enabled) {
+    if (!enabled || !orgId) {
       setReadings([]);
       setConfig(null);
       setDataError('');
@@ -34,17 +37,17 @@ export default function useDeviceReadings(enabled: boolean) {
     const handleError = (message: string, error: Error) => {
       if (!active) return;
 
-      // Evita tratar la desconexión como un error visible
-      // si el hook ya fue desactivado.
       console.error(message, error);
       setDataError(message);
     };
 
-    const readingsRef = collection(
-      db,
-      `orgs/${ORG_ID}/devices/${DEVICE_ID}/readings`,
-    );
+    setReadings([]);
+    setConfig(null);
+    setDataError('');
 
+    const basePath = `orgs/${orgId}/devices/${DEVICE_ID}`;
+
+    const readingsRef = collection(db, `${basePath}/readings`);
     const readingsQuery = query(
       readingsRef,
       orderBy('ts', 'desc'),
@@ -71,7 +74,7 @@ export default function useDeviceReadings(enabled: boolean) {
     );
 
     const unsubscribeDevice = onSnapshot(
-      doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`),
+      doc(db, basePath),
       (snapshot) => {
         if (!active) return;
 
@@ -88,7 +91,10 @@ export default function useDeviceReadings(enabled: boolean) {
         }
       },
       (error) => {
-        handleError('No se pudo cargar la configuración del dispositivo.', error);
+        handleError(
+          'No se pudo cargar la configuración del dispositivo.',
+          error,
+        );
       },
     );
 
@@ -97,7 +103,7 @@ export default function useDeviceReadings(enabled: boolean) {
       unsubscribeReadings();
       unsubscribeDevice();
     };
-  }, [enabled]);
+  }, [orgId, enabled]);
 
   return { readings, config, dataError };
 }

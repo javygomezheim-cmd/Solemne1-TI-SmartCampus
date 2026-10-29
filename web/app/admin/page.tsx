@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -13,7 +14,6 @@ import useHistoryReadings from '@/hooks/cliente/useHistoryReadings';
 
 import FirestoreUsageEstimate from '@/components/admin/FirestoreUsageEstimate';
 
-const ORG_ID = 'mi-org';
 const DEVICE_ID = 'Oo2T8PLAS6jet80h8wLo';
 
 function formatDate(ts?: Reading['ts']) {
@@ -31,6 +31,7 @@ export default function DashboardPage() {
   const [isChecking, setIsChecking] = useState(true);
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [orgId, setOrgId] = useState('');
 
   const [sampleIntervalInput, setSampleIntervalInput] = useState('60');
   const [humidityMaxInput, setHumidityMaxInput] = useState('');
@@ -41,24 +42,32 @@ export default function DashboardPage() {
   const [configMessage, setConfigMessage] = useState('');
   const [configError, setConfigError] = useState('');
 
-  // Verificar que el usuario tenga rol de administrador.
+  // Verificar el rol y obtener la organización del administrador.
   useEffect(() => {
+    let active = true;
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        router.replace('/');
+        if (active) router.replace('/');
         return;
       }
+
+      if (active) setIsChecking(true);
 
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
 
+        if (!active) return;
+
         if (!userDoc.exists()) {
           await signOut(auth);
-          router.replace('/');
+          if (active) router.replace('/');
           return;
         }
 
-        const role = userDoc.data().role;
+        const perfil = userDoc.data();
+        const role = perfil.role;
+        const organizacion = perfil.orgId;
 
         if (role !== 'admin') {
           if (role === 'cliente') {
@@ -70,16 +79,36 @@ export default function DashboardPage() {
           return;
         }
 
+        if (
+          typeof organizacion !== 'string' ||
+          !organizacion.trim()
+        ) {
+          console.error(
+            'El administrador no tiene una organización asignada.',
+          );
+          await signOut(auth);
+          if (active) router.replace('/');
+          return;
+        }
+
+        setOrgId(organizacion);
         setUserEmail(user.email);
         setUserRole(role);
         setIsChecking(false);
       } catch (error) {
         console.error('Error al verificar el rol:', error);
-        router.replace('/');
+
+        if (active) {
+          await signOut(auth);
+          router.replace('/');
+        }
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [router]);
 
   // Última lectura y configuración en tiempo real.
@@ -87,14 +116,21 @@ export default function DashboardPage() {
     readings,
     config,
     dataError,
-  } = useDeviceReadings(!isChecking && !!userEmail);
+  } = useDeviceReadings(
+    orgId,
+    !isChecking && !!userEmail && !!orgId,
+  );
 
+  // Actualizar los campos cuando cambia la configuración.
   useEffect(() => {
-    if (config) {
+    if (config && !configInputEdited) {
+      setSampleIntervalInput(
+        String(config.sampleIntervalSec ?? 60),
+      );
       setHumidityMaxInput(String(config.humMax ?? 70));
       setTemperatureMaxInput(String(config.tempMax ?? 28));
     }
-  }, [config?.version]);
+  }, [config, configInputEdited]);
 
   // Historial compartido con la página del cliente.
   const {
@@ -107,7 +143,7 @@ export default function DashboardPage() {
     cargandoHistorial,
     errorHistorial,
     buscarHistorial,
-  } = useHistoryReadings();
+  } = useHistoryReadings(orgId);
 
   const latest = readings[0] ?? null;
 
@@ -115,11 +151,16 @@ export default function DashboardPage() {
     setConfigMessage('');
     setConfigError('');
 
+    if (!orgId) {
+      setConfigError('Tu usuario no tiene una organización asignada.');
+      return;
+    }
+
     const intervalValue = sampleIntervalInput.trim();
     const humidityValue = humidityMaxInput.trim();
     const temperatureValue = temperatureMaxInput.trim();
 
-    // Validar intervalo
+    // Validar intervalo.
     if (!/^[1-9]\d*$/.test(intervalValue)) {
       setConfigError('Ingresa un intervalo entero positivo.');
       return;
@@ -136,7 +177,7 @@ export default function DashboardPage() {
       return;
     }
 
-    // Validar humedad
+    // Validar humedad.
     if (humidityValue === '') {
       setConfigError('Ingresa la humedad máxima.');
       return;
@@ -153,7 +194,7 @@ export default function DashboardPage() {
       return;
     }
 
-    // Validar temperatura
+    // Validar temperatura.
     if (temperatureValue === '') {
       setConfigError('Ingresa la temperatura máxima.');
       return;
@@ -183,7 +224,7 @@ export default function DashboardPage() {
       setSavingConfig(true);
 
       await updateDoc(
-        doc(db, `orgs/${ORG_ID}/devices/${DEVICE_ID}`),
+        doc(db, `orgs/${orgId}/devices/${DEVICE_ID}`),
         {
           'config.sampleIntervalSec': newInterval,
           'config.humMax': newHumidity,
@@ -207,6 +248,7 @@ export default function DashboardPage() {
       setSavingConfig(false);
     }
   };
+
 
   if (isChecking) {
     return (

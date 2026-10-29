@@ -1,7 +1,7 @@
 
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   collection,
   getDocs,
@@ -18,11 +18,10 @@ import {
 import { db } from '@/lib/firebase';
 import type { Reading } from '@/types/cliente';
 
-const ORG_ID = 'mi-org';
 const DEVICE_ID = 'Oo2T8PLAS6jet80h8wLo';
 const PAGE_SIZE = 50;
 
-export default function useHistoryReadings() {
+export default function useHistoryReadings(orgId: string) {
   const [fechaInicio, setFechaInicio] = useState('');
   const [fechaFin, setFechaFin] = useState('');
   const [historial, setHistorial] = useState<Reading[]>([]);
@@ -32,7 +31,19 @@ export default function useHistoryReadings() {
   const [cargandoHistorial, setCargandoHistorial] = useState(false);
   const [errorHistorial, setErrorHistorial] = useState('');
 
+  useEffect(() => {
+    setHistorial([]);
+    setCursorHistorial(null);
+    setHayMasHistorial(false);
+    setErrorHistorial('');
+  }, [orgId]);
+
   async function buscarHistorial(siguiente = false) {
+    if (!orgId) {
+      setErrorHistorial('Tu usuario no tiene una organización asignada.');
+      return;
+    }
+
     if (!fechaInicio || !fechaFin) {
       setErrorHistorial('Selecciona la fecha inicial y la fecha final.');
       return;
@@ -63,18 +74,14 @@ export default function useHistoryReadings() {
 
       const historialRef = collection(
         db,
-        `orgs/${ORG_ID}/devices/${DEVICE_ID}/history10m`,
+        `orgs/${orgId}/devices/${DEVICE_ID}/history10m`,
       );
-
-      const condiciones = [
-        where('ts', '>=', Timestamp.fromDate(inicio)),
-        where('ts', '<', Timestamp.fromDate(finExclusivo)),
-        orderBy('ts', 'desc'),
-      ];
 
       const consulta = query(
         historialRef,
-        ...condiciones,
+        where('ts', '>=', Timestamp.fromDate(inicio)),
+        where('ts', '<', Timestamp.fromDate(finExclusivo)),
+        orderBy('ts', 'desc'),
         ...(siguiente ? [startAfter(cursorHistorial!)] : []),
         limit(PAGE_SIZE),
       );
