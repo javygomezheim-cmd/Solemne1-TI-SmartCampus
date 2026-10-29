@@ -28,13 +28,16 @@ function formatDate(ts?: Reading['ts']) {
 
 export default function ClientePage() {
   const router = useRouter();
-  const { email, checking } = useClienteAuth();
+  const { email, orgId, checking } = useClienteAuth();
 
   const {
     readings,
     config,
     dataError,
-  } = useDeviceReadings(!checking && !!email);
+  } = useDeviceReadings(
+    orgId,
+    !checking && !!email && !!orgId
+  );
 
   // Estado independiente para consultar el historial bajo demanda.
   const {
@@ -47,7 +50,7 @@ export default function ClientePage() {
     cargandoHistorial,
     errorHistorial,
     buscarHistorial,
-  } = useHistoryReadings();
+  } = useHistoryReadings(orgId);
 
   const latest = readings[0] ?? null;
   const alerts: { title: string; description: string }[] = [];
@@ -222,16 +225,16 @@ export default function ClientePage() {
             title="Comodidad térmica"
             value={latest?.comfort ?? '--'}
             detail={`Muestras: ${latest?.samples ?? '--'}`}
-          color="#7c3aed"
-          icon={
-            latest?.comfort == null
-              ? '🎚️'
-              : latest.comfort < 40
-                ? '😟'
-                : latest.comfort < 70
-                  ? '😐'
-                  : '😊'
-          }
+            color="#7c3aed"
+            icon={
+              latest?.comfort == null
+                ? '🎚️'
+                : latest.comfort < 40
+                  ? '😟'
+                  : latest.comfort < 70
+                    ? '😐'
+                    : '😊'
+            }
           />
 
         </section>
@@ -502,7 +505,7 @@ export default function ClientePage() {
                           {lectura.motionEvents ?? '--'}
                         </td>
                         <td style={{ padding: 12, borderBottom: '1px solid #e5e7eb' }}>
-                          {lectura.comfort ?? '--'} 
+                          {lectura.comfort ?? '--'}
                         </td>
                       </tr>
                     ))}
