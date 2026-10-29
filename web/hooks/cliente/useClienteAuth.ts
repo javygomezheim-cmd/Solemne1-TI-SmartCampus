@@ -11,6 +11,7 @@ export default function useClienteAuth() {
   const router = useRouter();
 
   const [email, setEmail] = useState('');
+  const [orgId, setOrgId] = useState('');
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -18,9 +19,16 @@ export default function useClienteAuth() {
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
-        if (active) router.replace('/');
+        if (active) {
+          setEmail('');
+          setOrgId('');
+          setChecking(false);
+          router.replace('/');
+        }
         return;
       }
+
+      if (active) setChecking(true);
 
       try {
         const userDoc = await getDoc(doc(db, 'users', user.uid));
@@ -33,25 +41,37 @@ export default function useClienteAuth() {
           return;
         }
 
-        const role = userDoc.data().role;
+        const perfil = userDoc.data();
+        const role = perfil.role;
+        const organizacion = perfil.orgId;
 
         if (role === 'admin') {
           router.replace('/admin');
           return;
         }
 
-        if (role !== 'cliente') {
+        if (
+          role !== 'cliente' ||
+          typeof organizacion !== 'string' ||
+          !organizacion.trim()
+        ) {
           await signOut(auth);
           if (active) router.replace('/');
           return;
         }
 
         setEmail(user.email ?? '');
+        setOrgId(organizacion);
         setChecking(false);
       } catch (error) {
         console.error('Error verificando el cliente:', error);
 
-        if (active) router.replace('/');
+        if (active) {
+          setEmail('');
+          setOrgId('');
+          setChecking(false);
+          router.replace('/');
+        }
       }
     });
 
@@ -61,5 +81,5 @@ export default function useClienteAuth() {
     };
   }, [router]);
 
-  return { email, checking };
+  return { email, orgId, checking };
 }
